@@ -21,7 +21,7 @@ import pandas as pd
 st.set_page_config(
     page_title="키워드 분석기",
     page_icon="🔍",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="collapsed"
 )
 
@@ -31,6 +31,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp { background-color: #f8fafc; }
+    .block-container { max-width: 860px; padding-left: 1rem; padding-right: 1rem; }
     .metric-card {
         background: white; border-radius: 16px; padding: 20px 24px;
         border: 1px solid #e2e8f0; text-align: center;
@@ -218,113 +219,6 @@ class NaverSearchAdAPI:
         return 0
 
 
-class NaverBlogSearchAPI:
-    BASE_URL = "https://openapi.naver.com/v1/search/blog.json"
-
-    def __init__(self, client_id, client_secret):
-        self.client_id = client_id
-        self.client_secret = client_secret
-
-    def get_monthly_publish_count(self, keyword):
-        headers = {
-            "X-Naver-Client-Id": self.client_id,
-            "X-Naver-Client-Secret": self.client_secret
-        }
-        try:
-            # 1단계: start=1에서 100건 (최신)
-            resp1 = requests.get(self.BASE_URL, headers=headers,
-                params={"query": keyword, "display": 100, "start": 1, "sort": "date"}, timeout=15)
-            resp1.raise_for_status()
-            data1 = resp1.json()
-            total = data1.get("total", 0)
-            items1 = data1.get("items", [])
-            if not items1:
-                return 0, total
-
-            now = datetime.now()
-            thirty_days_ago = now - timedelta(days=30)
-
-            # 최신 100건 중 30일 이내 비율 확인
-            def count_recent(items):
-                count = 0
-                for item in items:
-                    postdate = item.get("postdate", "")
-                    if postdate:
-                        try:
-                            dt = datetime.strptime(postdate, "%Y%m%d")
-                            if dt >= thirty_days_ago:
-                                count += 1
-                        except ValueError:
-                            continue
-                return count
-
-            recent1 = count_recent(items1)
-
-            # 100건 모두 30일 이내가 아니면, 이 100건 내에서 비율로 추정
-            if recent1 < len(items1):
-                if recent1 > 0:
-                    return recent1, total
-                else:
-                    return 0, total
-
-            # 100건 모두 최근 30일이면 → start=1000에서 추가 확인
-            import time as _time
-            _time.sleep(0.2)
-            resp2 = requests.get(self.BASE_URL, headers=headers,
-                params={"query": keyword, "display": 100, "start": 1000, "sort": "date"}, timeout=15)
-            resp2.raise_for_status()
-            data2 = resp2.json()
-            items2 = data2.get("items", [])
-
-            if not items2:
-                return min(total, 1000), total
-
-            # start=1000의 가장 오래된 글 날짜와 start=1의 가장 최근 글 날짜 비교
-            def get_oldest_date(items):
-                for item in reversed(items):
-                    postdate = item.get("postdate", "")
-                    if postdate:
-                        try:
-                            return datetime.strptime(postdate, "%Y%m%d")
-                        except ValueError:
-                            continue
-                return None
-
-            def get_newest_date(items):
-                for item in items:
-                    postdate = item.get("postdate", "")
-                    if postdate:
-                        try:
-                            return datetime.strptime(postdate, "%Y%m%d")
-                        except ValueError:
-                            continue
-                return None
-
-            newest = get_newest_date(items1)
-            oldest = get_oldest_date(items2)
-
-            if newest and oldest:
-                days_span = max((newest - oldest).days, 1)
-                if days_span <= 30:
-                    # 1100개가 N일에 걸쳐 있으면 일평균 = 1100/N, 월간 = 일평균*30
-                    daily_rate = 1100 / days_span
-                    estimated_monthly = int(daily_rate * 30)
-                else:
-                    # 1100개가 30일 이상이면, 30일 이내 비율로 추정
-                    recent2 = count_recent(items2)
-                    if recent2 < len(items2):
-                        # 30일 경계가 start=1000 부근 → 비율로 보간
-                        boundary_pos = 1000 + int(len(items2) * (recent2 / max(len(items2), 1)))
-                        estimated_monthly = boundary_pos
-                    else:
-                        estimated_monthly = int(1100 / days_span * 30)
-                return estimated_monthly, total
-            else:
-                return min(total, 1000), total
-
-        except Exception as e:
-            st.warning(f"블로그 검색 API 오류: {e}")
-            return 0, 0
 
 
 class NaverDataLabAPI:
@@ -348,16 +242,22 @@ class NaverDataLabAPI:
         except Exception:
             return None
 
-    def get_trend(self, keyword, period_months=36):
+    def get_trend(self, keyword, period_years=3):
         end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=period_months * 30)).strftime("%Y-%m-%d")
+        # 여유 있게 4년치 요청 후, 실제 데이터 마지막 날짜 기준 3년만 필터
+        start_date = (datetime.now() - timedelta(days=(period_years + 1) * 365)).strftime("%Y-%m-%d")
         body = {
             "startDate": start_date, "endDate": end_date, "timeUnit": "week",
             "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}]
         }
         data = self._request("search", body)
         if data and "results" in data:
-            return [{"period": d["period"], "ratio": d["ratio"]} for d in data["results"][0].get("data", [])]
+            all_points = [{"period": d["period"], "ratio": d["ratio"]} for d in data["results"][0].get("data", [])]
+            if all_points:
+                # 가장 최근 데이터 날짜 기준으로 정확히 3년치만 반환
+                last_date = datetime.strptime(all_points[-1]["period"], "%Y-%m-%d")
+                cutoff = last_date - timedelta(days=period_years * 365)
+                return [p for p in all_points if datetime.strptime(p["period"], "%Y-%m-%d") >= cutoff]
         return []
 
     def get_yoy_change(self, keyword):
@@ -424,7 +324,7 @@ def run_analysis(keyword, config):
     result = {
         "keyword": keyword,
         "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "search_volume": {}, "blog_stats": {},
+        "search_volume": {},
         "trend": {}, "difficulty": {},
         "related_keywords": [], "cpc": {}
     }
@@ -459,18 +359,8 @@ def run_analysis(keyword, config):
                 "keyword": rk["keyword"], "monthly_total": rk["monthly_total"]
             })
 
-    progress.progress(25, text="📝 블로그 발행량 조회 중...")
-
-    # 2. 블로그 발행량
-    blog_api = NaverBlogSearchAPI(
-        config["naver_openapi"]["client_id"],
-        config["naver_openapi"]["client_secret"]
-    )
-    monthly_publish, total_posts = blog_api.get_monthly_publish_count(keyword)
-    result["blog_stats"] = {"monthly_publish": monthly_publish, "total_posts": total_posts}
-
-    # 3. DataLab
-    progress.progress(40, text="📈 검색 트렌드 조회 중...")
+    # 2. DataLab
+    progress.progress(30, text="📈 검색 트렌드 조회 중...")
     datalab = NaverDataLabAPI(
         config["naver_openapi"]["client_id"],
         config["naver_openapi"]["client_secret"]
@@ -500,7 +390,6 @@ def run_analysis(keyword, config):
 # ============================================================
 def display_results(result):
     sv = result["search_volume"]
-    bs = result["blog_stats"]
     diff = result["difficulty"]
     trend = result["trend"]
     cpc = result["cpc"]
@@ -529,12 +418,10 @@ def display_results(result):
     yoy_color = "#ef4444" if yoy < 0 else "#22c55e"
     yoy_icon = "📉" if yoy < 0 else "📈"
 
-    cols = st.columns(5)
+    cols = st.columns(3)
     metrics = [
         ("월 검색량", f"{sv.get('monthly_total',0):,}", "회", ""),
-        ("월 발행량", f"{bs.get('monthly_publish',0):,}", "개", ""),
-        ("평균 클릭 광고비", f"{cpc.get('avg_pc_cpc',0)}", "원", ""),
-        ("경쟁도", f"{cpc.get('competition','')}", "", ""),
+        ("평균 클릭 광고비", f"{cpc.get('avg_pc_cpc',0):,}", "원", ""),
         ("전년대비", f"{yoy:+.1f}", "%", f"{yoy_icon} {'감소' if yoy < 0 else '증가'}"),
     ]
     for col, (label, value, unit, sub) in zip(cols, metrics):
@@ -621,7 +508,7 @@ def main():
     st.markdown("""
     <div style="text-align:center;margin-bottom:32px">
         <h1 style="font-size:32px;font-weight:800">🔍 키워드 분석기</h1>
-        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 발행량 · 트렌드를 한눈에</p>
+        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · CPC · 트렌드를 한눈에</p>
     </div>
     """, unsafe_allow_html=True)
 
