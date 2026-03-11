@@ -122,13 +122,30 @@ class NaverSearchAdAPI:
     def get_keyword_stats(self, keyword):
         path = "/keywordstool"
         method = "GET"
-        headers = self._get_headers(method, path)
-        params = {"hintKeywords": keyword, "showDetail": "1"}
+        # 띄어쓰기 있는 키워드가 실패하면 붙여서 재시도
+        keyword_variants = [keyword]
+        if " " in keyword:
+            keyword_variants.append(keyword.replace(" ", ""))
 
-        try:
-            resp = requests.get(f"{self.BASE_URL}{path}", headers=headers, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+        data = None
+        for kw in keyword_variants:
+            headers = self._get_headers(method, path)
+            params = {"hintKeywords": kw, "showDetail": "1"}
+            try:
+                resp = requests.get(f"{self.BASE_URL}{path}", headers=headers, params=params, timeout=15)
+                if resp.status_code == 400 and kw != keyword_variants[-1]:
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception:
+                if kw == keyword_variants[-1]:
+                    st.warning(f"검색광고 API 오류: 키워드 '{keyword}'를 찾을 수 없습니다.")
+                    return None
+                continue
+
+        if data is None:
+            return None
             results = {"main_keyword": None, "related_keywords": []}
 
             for item in data.get("keywordList", []):
