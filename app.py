@@ -419,21 +419,41 @@ def display_results(result):
     yoy_icon = "📉" if yoy < 0 else "📈"
 
     cols = st.columns(3)
-    metrics = [
-        ("월 검색량", f"{sv.get('monthly_total',0):,}", "회", ""),
-        ("평균 클릭 광고비", f"{cpc.get('avg_pc_cpc',0):,}", "원", ""),
-        ("전년대비", f"{yoy:+.1f}", "%", f"{yoy_icon} {'감소' if yoy < 0 else '증가'}"),
-    ]
-    for col, (label, value, unit, sub) in zip(cols, metrics):
-        with col:
-            val_color = yoy_color if label == "전년대비" else "#1e293b"
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="label">{label}</div>
-                <div class="value" style="color:{val_color}">{value}<span class="unit">{unit}</span></div>
-                <div class="sub">{sub}</div>
+
+    # 월 검색량 카드 (PC/모바일 구분 표시)
+    pc_vol = sv.get('monthly_pc', 0)
+    mob_vol = sv.get('monthly_mobile', 0)
+    total_vol = sv.get('monthly_total', 0)
+    with cols[0]:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="label">월 검색량</div>
+            <div class="value">{total_vol:,}<span class="unit">회</span></div>
+            <div class="sub" style="margin-top:8px;font-size:13px;color:#64748b">
+                💻 PC <strong>{pc_vol:,}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;📱 모바일 <strong>{mob_vol:,}</strong>
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 평균 클릭 광고비 카드
+    with cols[1]:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="label">평균 클릭 광고비</div>
+            <div class="value">{cpc.get('avg_pc_cpc',0):,}<span class="unit">원</span></div>
+            <div class="sub"></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 전년대비 카드
+    with cols[2]:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="label">전년대비</div>
+            <div class="value" style="color:{yoy_color}">{yoy:+.1f}<span class="unit">%</span></div>
+            <div class="sub">{yoy_icon} {'감소' if yoy < 0 else '증가'}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
