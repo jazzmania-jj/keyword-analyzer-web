@@ -21,7 +21,7 @@ import pandas as pd
 st.set_page_config(
     page_title="키워드 분석기",
     page_icon="🔍",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
@@ -31,7 +31,6 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp { background-color: #f8fafc; }
-    .block-container { max-width: 860px; padding-left: 1rem; padding-right: 1rem; }
     .metric-card {
         background: white; border-radius: 16px; padding: 20px 24px;
         border: 1px solid #e2e8f0; text-align: center;
@@ -40,12 +39,20 @@ st.markdown("""
     .metric-card .value { font-size: 28px; font-weight: 700; color: #1e293b; }
     .metric-card .unit { font-size: 14px; font-weight: 400; color: #94a3b8; }
     .metric-card .sub { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-
+    .grade-badge {
+        display: inline-flex; flex-direction: column; align-items: center;
+        justify-content: center; width: 80px; height: 80px; border-radius: 16px;
+        color: white; font-weight: 700;
+    }
+    .grade-badge .grade { font-size: 28px; line-height: 1; }
+    .grade-badge .grade-label { font-size: 11px; opacity: 0.9; margin-top: 2px; }
     .sat-badge {
         display: inline-block; padding: 2px 12px; border-radius: 10px;
         color: white; font-size: 12px; font-weight: 600;
     }
-
+    .ratio-bar-container { margin-bottom: 12px; }
+    .ratio-bar-labels { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+    .ratio-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; }
     .section-header { font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 16px; }
     .footer { text-align: center; font-size: 12px; color: #94a3b8; padding: 24px 0 8px; }
 </style>
@@ -115,32 +122,13 @@ class NaverSearchAdAPI:
     def get_keyword_stats(self, keyword):
         path = "/keywordstool"
         method = "GET"
-        # 띄어쓰기 있는 키워드가 실패하면 붙여서 재시도
-        keyword_variants = [keyword]
-        if " " in keyword:
-            keyword_variants.append(keyword.replace(" ", ""))
-
-        data = None
-        for kw in keyword_variants:
-            headers = self._get_headers(method, path)
-            params = {"hintKeywords": kw, "showDetail": "1"}
-            try:
-                resp = requests.get(f"{self.BASE_URL}{path}", headers=headers, params=params, timeout=15)
-                if resp.status_code == 400 and kw != keyword_variants[-1]:
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                break
-            except Exception:
-                if kw == keyword_variants[-1]:
-                    st.warning(f"검색광고 API 오류: 키워드 '{keyword}'를 찾을 수 없습니다.")
-                    return None
-                continue
-
-        if data is None:
-            return None
+        headers = self._get_headers(method, path)
+        params = {"hintKeywords": keyword, "showDetail": "1"}
 
         try:
+            resp = requests.get(f"{self.BASE_URL}{path}", headers=headers, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
             results = {"main_keyword": None, "related_keywords": []}
 
             for item in data.get("keywordList", []):
@@ -176,43 +164,77 @@ class NaverSearchAdAPI:
             st.warning(f"검색광고 API 오류: {e}")
             return None
 
+    def get_monthly_volumes(self, keyword):
+        """month=1~12 파라미터로 각 월별 실제 검색량 조회"""
+        path = "/keywordstool"
+        method = "GET"
+        monthly_data = {}
 
-    def get_estimated_cpc(self, keyword):
-        """키워드의 예상 클릭당 비용(CPC) 조회"""
-        path = "/estimate/performance/keyword"
-        method = "POST"
-        headers = self._get_headers(method, path)
-        bids = [500, 1000, 2000, 3000, 5000, 7000, 10000]
-        
-        total_cpc = 0
-        cpc_count = 0
-        
-        for device in ["PC"]:  # PC 기준 CPC만 사용 (판다랭크 동일 기준)
+        for m in range(1, 13):
             try:
-                body = {"device": device, "keywordplus": False, "key": keyword, "bids": bids}
-                resp = requests.post(f"{self.BASE_URL}{path}", headers=headers, json=body, timeout=15)
+                headers = self._get_headers(method, path)
+                params = {"hintKeywords": keyword, "showDetail": "1", "month": str(m)}
+                resp = requests.get(f"{self.BASE_URL}{path}", headers=headers, params=params, timeout=15)
                 if resp.status_code == 200:
                     data = resp.json()
-                    for est in data.get("estimate", []):
-                        clicks = est.get("clicks", 0)
-                        cost = est.get("cost", 0)
-                        if clicks > 0 and cost > 0:
-                            cpc = cost / clicks
-                            total_cpc += cpc
-                            cpc_count += 1
-                            break  # 클릭이 발생하는 최소 입찰가의 CPC만 사용
-                # 서명 갱신 (타임스탬프 변경)
-                import time as _t
-                _t.sleep(0.2)
-                headers = self._get_headers(method, path)
+                    for item in data.get("keywordList", []):
+                        if item.get("relKeyword", "").strip() == keyword.strip():
+                            pc = item.get("monthlyPcQcCnt", 0)
+                            mobile = item.get("monthlyMobileQcCnt", 0)
+                            if isinstance(pc, str):
+                                pc = 5 if "< 10" in pc else int(pc.replace(",", ""))
+                            if isinstance(mobile, str):
+                                mobile = 5 if "< 10" in mobile else int(mobile.replace(",", ""))
+                            monthly_data[m] = {"pc": pc, "mobile": mobile, "total": pc + mobile}
+                            break
+                time.sleep(0.3)
             except Exception:
                 continue
-        
-        if cpc_count > 0:
-            return round(total_cpc / cpc_count)
-        return 0
+
+        return monthly_data
 
 
+class NaverBlogSearchAPI:
+    BASE_URL = "https://openapi.naver.com/v1/search/blog.json"
+
+    def __init__(self, client_id, client_secret):
+        self.client_id = client_id
+        self.client_secret = client_secret
+
+    def get_monthly_publish_count(self, keyword):
+        headers = {
+            "X-Naver-Client-Id": self.client_id,
+            "X-Naver-Client-Secret": self.client_secret
+        }
+        params = {"query": keyword, "display": 100, "start": 1, "sort": "date"}
+        try:
+            resp = requests.get(self.BASE_URL, headers=headers, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            total = data.get("total", 0)
+            items = data.get("items", [])
+            if not items:
+                return 0, total
+            now = datetime.now()
+            thirty_days_ago = now - timedelta(days=30)
+            recent_count = 0
+            for item in items:
+                postdate = item.get("postdate", "")
+                if postdate:
+                    try:
+                        post_dt = datetime.strptime(postdate, "%Y%m%d")
+                        if post_dt >= thirty_days_ago:
+                            recent_count += 1
+                    except ValueError:
+                        continue
+            if len(items) > 0 and recent_count > 0:
+                estimated_monthly = int(total * (recent_count / len(items)))
+            else:
+                estimated_monthly = int(total * 0.02)
+            return estimated_monthly, total
+        except Exception as e:
+            st.warning(f"블로그 검색 API 오류: {e}")
+            return 0, 0
 
 
 class NaverDataLabAPI:
@@ -236,23 +258,56 @@ class NaverDataLabAPI:
         except Exception:
             return None
 
-    def get_trend(self, keyword, period_years=3):
+    def get_trend(self, keyword, period_months=36):
         end_date = datetime.now().strftime("%Y-%m-%d")
-        # 여유 있게 4년치 요청 후, 실제 데이터 마지막 날짜 기준 3년만 필터
-        start_date = (datetime.now() - timedelta(days=(period_years + 1) * 365)).strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=period_months * 30)).strftime("%Y-%m-%d")
         body = {
             "startDate": start_date, "endDate": end_date, "timeUnit": "week",
             "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}]
         }
         data = self._request("search", body)
         if data and "results" in data:
-            all_points = [{"period": d["period"], "ratio": d["ratio"]} for d in data["results"][0].get("data", [])]
-            if all_points:
-                # 가장 최근 데이터 날짜 기준으로 정확히 3년치만 반환
-                last_date = datetime.strptime(all_points[-1]["period"], "%Y-%m-%d")
-                cutoff = last_date - timedelta(days=period_years * 365)
-                return [p for p in all_points if datetime.strptime(p["period"], "%Y-%m-%d") >= cutoff]
+            return [{"period": d["period"], "ratio": d["ratio"]} for d in data["results"][0].get("data", [])]
         return []
+
+    def get_gender_ratio(self, keyword):
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        results = {}
+        for gender in ["f", "m"]:
+            body = {
+                "startDate": start_date, "endDate": end_date, "timeUnit": "month",
+                "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
+                "gender": gender
+            }
+            data = self._request("search", body)
+            if data and "results" in data:
+                ratios = [d["ratio"] for d in data["results"][0].get("data", []) if d["ratio"] > 0]
+                results[gender] = sum(ratios) / len(ratios) if ratios else 0
+        total = results.get("f", 0) + results.get("m", 0)
+        if total > 0:
+            return {"female": round(results["f"] / total * 100, 1), "male": round(results["m"] / total * 100, 1)}
+        return {"female": 50.0, "male": 50.0}
+
+    def get_age_ratio(self, keyword):
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        age_map = {"1": "10대", "2": "20대", "3": "30대", "4": "40대", "5": "50대", "6": "60대+"}
+        results = {}
+        for age_code, age_label in age_map.items():
+            body = {
+                "startDate": start_date, "endDate": end_date, "timeUnit": "month",
+                "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
+                "ages": [age_code]
+            }
+            data = self._request("search", body)
+            if data and "results" in data:
+                ratios = [d["ratio"] for d in data["results"][0].get("data", []) if d["ratio"] > 0]
+                results[age_label] = sum(ratios) / len(ratios) if ratios else 0
+        total = sum(results.values())
+        if total > 0:
+            return {k: round(v / total * 100, 1) for k, v in results.items()}
+        return results
 
     def get_yoy_change(self, keyword):
         now = datetime.now()
@@ -285,13 +340,20 @@ class NaverDataLabAPI:
 # ============================================================
 # 난이도 등급
 # ============================================================
-def calculate_difficulty(monthly_search, cpc, competition):
+def calculate_difficulty(monthly_search, blog_saturation, cpc, competition):
     score = 0
     if monthly_search >= 50000: score += 30
     elif monthly_search >= 20000: score += 25
     elif monthly_search >= 10000: score += 20
     elif monthly_search >= 5000: score += 15
     elif monthly_search >= 1000: score += 10
+    else: score += 5
+
+    if blog_saturation < 50: score += 30
+    elif blog_saturation < 100: score += 25
+    elif blog_saturation < 150: score += 20
+    elif blog_saturation < 200: score += 15
+    elif blog_saturation < 300: score += 10
     else: score += 5
 
     if cpc >= 2000: score += 20
@@ -318,9 +380,9 @@ def run_analysis(keyword, config):
     result = {
         "keyword": keyword,
         "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "search_volume": {},
-        "trend": {}, "difficulty": {},
-        "related_keywords": [], "cpc": {}
+        "search_volume": {}, "blog_stats": {}, "saturation": {},
+        "trend": {}, "demographics": {}, "difficulty": {},
+        "related_keywords": [], "cpc": {}, "monthly_volumes": {}
     }
 
     progress = st.progress(0, text="🔍 네이버 검색광고 API 조회 중...")
@@ -341,34 +403,61 @@ def run_analysis(keyword, config):
             "pc_ratio": main["pc_ratio"],
             "mobile_ratio": main["mobile_ratio"]
         }
-        # 실제 CPC(원) 조회
-        estimated_cpc = ad_api.get_estimated_cpc(keyword)
         result["cpc"] = {
-            "avg_pc_cpc": estimated_cpc,
+            "avg_pc_cpc": main.get("avg_cpc", 0),
             "avg_mobile_cpc": main.get("avg_mobile_cpc", 0),
             "competition": main.get("competition", "")
         }
         for rk in kw_stats["related_keywords"][:15]:
             result["related_keywords"].append({
-                "keyword": rk["keyword"], "monthly_total": rk["monthly_total"]
+                "keyword": rk["keyword"], "monthly_total": rk["monthly_total"], "saturation": 0
             })
 
-    # 2. DataLab
-    progress.progress(30, text="📈 검색 트렌드 조회 중...")
+    progress.progress(25, text="📝 블로그 발행량 조회 중...")
+
+    # 2. 블로그 발행량
+    blog_api = NaverBlogSearchAPI(
+        config["naver_openapi"]["client_id"],
+        config["naver_openapi"]["client_secret"]
+    )
+    monthly_publish, total_posts = blog_api.get_monthly_publish_count(keyword)
+    monthly_search = result["search_volume"].get("monthly_total", 1)
+    blog_saturation = round(monthly_publish / max(monthly_search, 1) * 100, 1)
+    result["blog_stats"] = {"monthly_publish": monthly_publish, "total_posts": total_posts}
+    result["saturation"] = {"blog_saturation": blog_saturation}
+
+    # 연관 키워드 포화도
+    progress.progress(40, text="📊 연관 키워드 포화도 계산 중...")
+    for i, rk in enumerate(result["related_keywords"]):
+        rk_monthly, _ = blog_api.get_monthly_publish_count(rk["keyword"])
+        rk["saturation"] = round(rk_monthly / max(rk["monthly_total"], 1) * 100, 1)
+        pct = 40 + int((i + 1) / max(len(result["related_keywords"]), 1) * 30)
+        progress.progress(pct, text=f"📊 연관 키워드 포화도 계산 중... ({i+1}/{len(result['related_keywords'])})")
+        time.sleep(0.2)
+
+    # 3. DataLab
+    progress.progress(70, text="📈 검색 트렌드 및 인구통계 조회 중...")
     datalab = NaverDataLabAPI(
         config["naver_openapi"]["client_id"],
         config["naver_openapi"]["client_secret"]
     )
     trend = datalab.get_trend(keyword)
     yoy_change = datalab.get_yoy_change(keyword)
+    gender = datalab.get_gender_ratio(keyword)
+    age = datalab.get_age_ratio(keyword)
     result["trend"] = {"data": trend, "yoy_change": yoy_change}
+    result["demographics"] = {"gender": gender, "age": age}
 
-    # 4. 난이도
+    # 4. 월별 실제 검색량 (month 파라미터)
+    progress.progress(90, text="📊 월별 검색량 조회 중...")
+    monthly_volumes = ad_api.get_monthly_volumes(keyword)
+    result["monthly_volumes"] = monthly_volumes
+
+    # 5. 난이도
     cpc_val = result["cpc"].get("avg_pc_cpc", 0)
     if isinstance(cpc_val, str): cpc_val = 0
-    monthly_search = result["search_volume"].get("monthly_total", 1)
     grade, grade_label, grade_score = calculate_difficulty(
-        monthly_search, cpc_val,
+        monthly_search, blog_saturation, cpc_val,
         result["cpc"].get("competition", "보통")
     )
     result["difficulty"] = {"grade": grade, "label": grade_label, "score": grade_score}
@@ -384,92 +473,210 @@ def run_analysis(keyword, config):
 # ============================================================
 def display_results(result):
     sv = result["search_volume"]
+    bs = result["blog_stats"]
+    sat = result["saturation"]
     diff = result["difficulty"]
+    demo = result["demographics"]
     trend = result["trend"]
     cpc = result["cpc"]
     related = result["related_keywords"]
 
+    grade_colors = {"A+":"#16a34a","A":"#22c55e","A-":"#84cc16","B+":"#eab308",
+                    "B":"#f59e0b","B-":"#f97316","C":"#ef4444","D":"#dc2626"}
+    gc = grade_colors.get(diff["grade"], "#94a3b8")
+
     st.markdown(f"""
-    <div style="background:white;border-radius:16px;padding:24px;border:1px solid #e2e8f0;text-align:center;margin-bottom:20px">
-        <div style="font-size:26px;font-weight:700;color:#1e293b">{result["keyword"]}</div>
+    <div style="background:white;border-radius:16px;padding:24px;border:1px solid #e2e8f0;display:flex;align-items:center;gap:20px;margin-bottom:20px">
+        <div class="grade-badge" style="background:{gc}">
+            <span class="grade">{diff["grade"]}</span>
+            <span class="grade-label">{diff["label"]}</span>
+        </div>
+        <div>
+            <div style="font-size:24px;font-weight:700">{result["keyword"]}</div>
+            <div style="font-size:14px;color:#94a3b8;margin-top:6px">
+                난이도 <strong>{diff["label"]}</strong> · 점수 {diff["score"]}/100 · {result["analyzed_at"]}
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
+    blog_sat = sat.get("blog_saturation", 0)
+    sat_status = "⚠️ 포화" if blog_sat > 150 else "✅ 적정"
     yoy = trend.get("yoy_change", 0)
     yoy_color = "#ef4444" if yoy < 0 else "#22c55e"
     yoy_icon = "📉" if yoy < 0 else "📈"
 
-    pc_vol = sv.get('monthly_pc', 0)
-    mob_vol = sv.get('monthly_mobile', 0)
-    total_vol = sv.get('monthly_total', 0)
-
-    cols = st.columns(4)
-    with cols[0]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="label">월 검색량 (총계)</div>
-            <div class="value">{total_vol:,}<span class="unit">회</span></div>
-            <div class="sub"></div>
-        </div>
-        """, unsafe_allow_html=True)
-    with cols[1]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="label">💻 PC</div>
-            <div class="value">{pc_vol:,}<span class="unit">회</span></div>
-            <div class="sub"></div>
-        </div>
-        """, unsafe_allow_html=True)
-    with cols[2]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="label">📱 모바일</div>
-            <div class="value">{mob_vol:,}<span class="unit">회</span></div>
-            <div class="sub"></div>
-        </div>
-        """, unsafe_allow_html=True)
-    with cols[3]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="label">전년대비</div>
-            <div class="value" style="color:{yoy_color}">{yoy:+.1f}<span class="unit">%</span></div>
-            <div class="sub">{yoy_icon} {'감소' if yoy < 0 else '증가'}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    cols = st.columns(6)
+    metrics = [
+        ("월 검색량", f"{sv.get('monthly_total',0):,}", "회", ""),
+        ("월 발행량", f"{bs.get('monthly_publish',0):,}", "개", ""),
+        ("평균 클릭 광고비", f"{cpc.get('avg_pc_cpc',0)}", "원", ""),
+        ("블로그 포화도", f"{blog_sat}", "%", sat_status),
+        ("경쟁도", f"{cpc.get('competition','')}", "", ""),
+        ("전년대비", f"{yoy:+.1f}", "%", f"{yoy_icon} {'감소' if yoy < 0 else '증가'}"),
+    ]
+    for col, (label, value, unit, sub) in zip(cols, metrics):
+        with col:
+            val_color = yoy_color if label == "전년대비" else "#1e293b"
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="label">{label}</div>
+                <div class="value" style="color:{val_color}">{value}<span class="unit">{unit}</span></div>
+                <div class="sub">{sub}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 트렌드 차트 (월간 조회량 추정)
+    # 월별 검색량 차트 (실제값 기반)
     trend_data = trend.get("data", [])
+    monthly_volumes = result.get("monthly_volumes", {})
+    monthly_total = sv.get("monthly_total", 0)
+
     if trend_data:
-        monthly_total = sv.get("monthly_total", 0)
         st.markdown(f"""
-        <div class="section-header">📈 월간 검색량 추이
+        <div class="section-header">📈 월별 검색량 추이
             <span style="font-size:14px;font-weight:400;color:{yoy_color}">
                 전년대비 {yoy:+.1f}% {'감소' if yoy < 0 else '증가'}
             </span>
         </div>
         """, unsafe_allow_html=True)
+
+        import altair as alt
+
+        # DataLab 주간 데이터를 월별로 집계
         df_trend = pd.DataFrame(trend_data)
         df_trend["period"] = pd.to_datetime(df_trend["period"])
-        # 주간 데이터 → 월간 평균 ratio로 집계
-        df_trend = df_trend.set_index("period")
-        df_monthly = df_trend.resample("ME").mean()
-        # ratio 최댓값을 현재 월 검색량에 매핑하여 실제 검색량 추정
-        max_ratio = df_monthly["ratio"].max()
-        if max_ratio > 0 and monthly_total > 0:
-            df_monthly["월간 검색량"] = (df_monthly["ratio"] / max_ratio * monthly_total).round(0).astype(int)
-        else:
-            df_monthly["월간 검색량"] = 0
-        st.area_chart(df_monthly["월간 검색량"], color="#22c55e", use_container_width=True)
+        df_trend["month_start"] = df_trend["period"].dt.to_period("M").dt.to_timestamp()
+        df_monthly = df_trend.groupby("month_start").agg({"ratio": "mean"}).reset_index()
+        df_monthly.columns = ["period", "ratio"]
 
-    # 연관 키워드
-    st.markdown('<div class="section-header">🔗 연관 키워드</div>', unsafe_allow_html=True)
-    if related:
-        rows = []
-        for rk in related:
-            rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(len(rows)*40+40, 600))
+        # 이번 달(불완전 데이터) 제외
+        current_month_start = pd.Timestamp(datetime.now().replace(day=1))
+        df_monthly = df_monthly[df_monthly["period"] < current_month_start]
+
+        # 최근 12개월만
+        df_monthly = df_monthly.tail(12).reset_index(drop=True)
+
+        # month 파라미터 실제값으로 검색량 계산
+        if monthly_volumes and len(df_monthly) > 0:
+            volumes = []
+            for _, row in df_monthly.iterrows():
+                m = row["period"].month
+                mv = monthly_volumes.get(m) or monthly_volumes.get(str(m))
+                if mv and isinstance(mv, dict):
+                    volumes.append(mv.get("total", 0))
+                else:
+                    # fallback: DataLab ratio 기반 추정
+                    recent_ratio = df_monthly["ratio"].iloc[-1] if len(df_monthly) > 0 else 1
+                    if recent_ratio > 0 and monthly_total > 0:
+                        volumes.append(int(round(row["ratio"] / recent_ratio * monthly_total)))
+                    else:
+                        volumes.append(0)
+            df_monthly["검색량"] = volumes
+        else:
+            # monthly_volumes 없으면 ratio 기반 추정
+            recent_ratio = df_monthly["ratio"].iloc[-1] if len(df_monthly) > 0 else 1
+            if recent_ratio > 0 and monthly_total > 0:
+                df_monthly["검색량"] = df_monthly["ratio"].apply(
+                    lambda r: int(round(r / recent_ratio * monthly_total))
+                )
+            else:
+                df_monthly["검색량"] = 0
+
+        df_monthly["월"] = df_monthly["period"].dt.strftime("%Y-%m")
+
+        chart = alt.Chart(df_monthly).mark_bar(
+            cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#22c55e"
+        ).encode(
+            x=alt.X("월:N", axis=alt.Axis(labelAngle=-45, title=None)),
+            y=alt.Y("검색량:Q", axis=alt.Axis(title="검색량")),
+            tooltip=[alt.Tooltip("월:N", title="월"), alt.Tooltip("검색량:Q", title="검색량", format=",")]
+        ).properties(height=300)
+
+        text = chart.mark_text(dy=-10, fontSize=11, fontWeight="bold").encode(
+            text=alt.Text("검색량:Q", format=",")
+        )
+
+        st.altair_chart(chart + text, use_container_width=True)
+
+        # 월별 검색량 상세 (month 파라미터 실제값)
+        if monthly_volumes:
+            with st.expander("📋 월별 검색량 상세 (month 파라미터 실제값)"):
+                mv_rows = []
+                for m_key in sorted(monthly_volumes.keys(), key=lambda x: int(x)):
+                    d = monthly_volumes[m_key]
+                    mv_rows.append({
+                        "월": f"{m_key}월",
+                        "PC": f"{d.get('pc', 0):,}",
+                        "모바일": f"{d.get('mobile', 0):,}",
+                        "합계": f"{d.get('total', 0):,}"
+                    })
+                st.dataframe(pd.DataFrame(mv_rows), use_container_width=True, hide_index=True)
+
+    # 인구통계 + 연관 키워드
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown('<div class="section-header">👥 인구통계</div>', unsafe_allow_html=True)
+        mobile_r = sv.get("mobile_ratio", 50)
+        pc_r = sv.get("pc_ratio", 50)
+        st.markdown(f"""
+        <div class="ratio-bar-container">
+            <div class="ratio-bar-labels"><span>📱 모바일 {mobile_r}%</span><span>💻 PC {pc_r}%</span></div>
+            <div class="ratio-bar"><div style="width:{mobile_r}%;background:#22c55e"></div><div style="width:{pc_r}%;background:#3b82f6"></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+        gender = demo.get("gender", {})
+        st.markdown(f"""
+        <div class="ratio-bar-container">
+            <div class="ratio-bar-labels"><span>👩 여성 {gender.get("female",50)}%</span><span>👨 남성 {gender.get("male",50)}%</span></div>
+            <div class="ratio-bar"><div style="width:{gender.get("female",50)}%;background:#f472b6"></div><div style="width:{gender.get("male",50)}%;background:#60a5fa"></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+        age = demo.get("age", {})
+        if age:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("**연령대 분포**")
+            df_age = pd.DataFrame({"연령대": list(age.keys()), "비율(%)": list(age.values())}).set_index("연령대")
+            st.bar_chart(df_age, color="#3b82f6", use_container_width=True)
+
+    with col_right:
+        st.markdown('<div class="section-header">🔗 연관 키워드</div>', unsafe_allow_html=True)
+        if related:
+            rows = []
+            for rk in related:
+                sat_val = rk["saturation"]
+                sat_emoji = "🔴" if sat_val >= 300 else ("🟡" if sat_val >= 150 else "🟢")
+                rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}", "포화도": f"{sat_emoji} {sat_val}%"})
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(len(rows)*40+40, 600))
+
+    # 블로그 키워드 추천
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">💡 블로그 키워드 추천 판단</div>', unsafe_allow_html=True)
+    monthly_total = sv.get("monthly_total", 0)
+    issues = []
+    if blog_sat > 300: issues.append(f"포화도 {blog_sat}%로 극심한 경쟁 (기준: 300% 이하)")
+    if monthly_total < 500: issues.append(f"월 검색량 {monthly_total:,}회로 수요 부족 (기준: 1,000회 이상)")
+    if yoy < -30: issues.append(f"전년대비 {yoy:+.1f}% 검색량 급감 (기준: -30% 미만)")
+    goods = []
+    if monthly_total >= 1000: goods.append(f"월 검색량 {monthly_total:,}회 — 충분한 수요")
+    if blog_sat <= 150: goods.append(f"포화도 {blog_sat}% — 경쟁 적정")
+    if diff["score"] >= 55: goods.append(f"난이도 {diff['grade']} — 진입 가능")
+    if yoy >= 0: goods.append(f"전년대비 {yoy:+.1f}% — 상승 트렌드")
+
+    for issue in issues: st.error(f"❌ {issue}")
+    for good in goods: st.success(f"✅ {good}")
+
+    if not issues or len(goods) > len(issues):
+        st.info("👉 이 키워드로 블로그 글 작성을 **추천**합니다.")
+    else:
+        st.warning("👉 이 키워드 단독으로는 어렵습니다. 연관 키워드 중 포화도가 낮은 롱테일 키워드를 활용하세요.")
+        good_alts = [rk for rk in related if rk["saturation"] <= 150 and rk["monthly_total"] >= 1000]
+        if good_alts:
+            st.markdown("**추천 대안 키워드:**")
+            for alt in good_alts[:5]:
+                st.markdown(f"- **{alt['keyword']}** (월 {alt['monthly_total']:,}회 / 포화도 {alt['saturation']}%)")
 
     # JSON 다운로드
     st.markdown("<br>", unsafe_allow_html=True)
@@ -519,7 +726,7 @@ def main():
     st.markdown("""
     <div style="text-align:center;margin-bottom:32px">
         <h1 style="font-size:32px;font-weight:800">🔍 키워드 분석기</h1>
-        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · CPC · 트렌드를 한눈에</p>
+        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 포화도 · 트렌드 · 인구통계를 한눈에</p>
     </div>
     """, unsafe_allow_html=True)
 
