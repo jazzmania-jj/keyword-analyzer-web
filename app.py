@@ -146,6 +146,8 @@ class NaverSearchAdAPI:
 
         if data is None:
             return None
+
+        try:
             results = {"main_keyword": None, "related_keywords": []}
 
             for item in data.get("keywordList", []):
