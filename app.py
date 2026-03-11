@@ -50,9 +50,7 @@ st.markdown("""
         display: inline-block; padding: 2px 12px; border-radius: 10px;
         color: white; font-size: 12px; font-weight: 600;
     }
-    .ratio-bar-container { margin-bottom: 12px; }
-    .ratio-bar-labels { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
-    .ratio-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; }
+
     .section-header { font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 16px; }
     .footer { text-align: center; font-size: 12px; color: #94a3b8; padding: 24px 0 8px; }
 </style>
@@ -362,45 +360,6 @@ class NaverDataLabAPI:
             return [{"period": d["period"], "ratio": d["ratio"]} for d in data["results"][0].get("data", [])]
         return []
 
-    def get_gender_ratio(self, keyword):
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-        results = {}
-        for gender in ["f", "m"]:
-            body = {
-                "startDate": start_date, "endDate": end_date, "timeUnit": "month",
-                "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
-                "gender": gender
-            }
-            data = self._request("search", body)
-            if data and "results" in data:
-                ratios = [d["ratio"] for d in data["results"][0].get("data", []) if d["ratio"] > 0]
-                results[gender] = sum(ratios) / len(ratios) if ratios else 0
-        total = results.get("f", 0) + results.get("m", 0)
-        if total > 0:
-            return {"female": round(results["f"] / total * 100, 1), "male": round(results["m"] / total * 100, 1)}
-        return {"female": 50.0, "male": 50.0}
-
-    def get_age_ratio(self, keyword):
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-        age_map = {"1": "10대", "2": "20대", "3": "30대", "4": "40대", "5": "50대", "6": "60대+"}
-        results = {}
-        for age_code, age_label in age_map.items():
-            body = {
-                "startDate": start_date, "endDate": end_date, "timeUnit": "month",
-                "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
-                "ages": [age_code]
-            }
-            data = self._request("search", body)
-            if data and "results" in data:
-                ratios = [d["ratio"] for d in data["results"][0].get("data", []) if d["ratio"] > 0]
-                results[age_label] = sum(ratios) / len(ratios) if ratios else 0
-        total = sum(results.values())
-        if total > 0:
-            return {k: round(v / total * 100, 1) for k, v in results.items()}
-        return results
-
     def get_yoy_change(self, keyword):
         now = datetime.now()
         body_this = {
@@ -473,7 +432,7 @@ def run_analysis(keyword, config):
         "keyword": keyword,
         "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "search_volume": {}, "blog_stats": {}, "saturation": {},
-        "trend": {}, "demographics": {}, "difficulty": {},
+        "trend": {}, "difficulty": {},
         "related_keywords": [], "cpc": {}
     }
 
@@ -530,17 +489,14 @@ def run_analysis(keyword, config):
         time.sleep(0.2)
 
     # 3. DataLab
-    progress.progress(75, text="📈 검색 트렌드 및 인구통계 조회 중...")
+    progress.progress(75, text="📈 검색 트렌드 조회 중...")
     datalab = NaverDataLabAPI(
         config["naver_openapi"]["client_id"],
         config["naver_openapi"]["client_secret"]
     )
     trend = datalab.get_trend(keyword)
     yoy_change = datalab.get_yoy_change(keyword)
-    gender = datalab.get_gender_ratio(keyword)
-    age = datalab.get_age_ratio(keyword)
     result["trend"] = {"data": trend, "yoy_change": yoy_change}
-    result["demographics"] = {"gender": gender, "age": age}
 
     # 4. 난이도
     cpc_val = result["cpc"].get("avg_pc_cpc", 0)
@@ -565,7 +521,6 @@ def display_results(result):
     bs = result["blog_stats"]
     sat = result["saturation"]
     diff = result["difficulty"]
-    demo = result["demographics"]
     trend = result["trend"]
     cpc = result["cpc"]
     related = result["related_keywords"]
@@ -632,69 +587,15 @@ def display_results(result):
         df_trend = df_trend.set_index("period")
         st.area_chart(df_trend["ratio"], color="#22c55e", use_container_width=True)
 
-    # 인구통계 + 연관 키워드
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        st.markdown('<div class="section-header">👥 인구통계</div>', unsafe_allow_html=True)
-        mobile_r = sv.get("mobile_ratio", 50)
-        pc_r = sv.get("pc_ratio", 50)
-        st.markdown(f"""
-        <div class="ratio-bar-container">
-            <div class="ratio-bar-labels"><span>📱 모바일 {mobile_r}%</span><span>💻 PC {pc_r}%</span></div>
-            <div class="ratio-bar"><div style="width:{mobile_r}%;background:#22c55e"></div><div style="width:{pc_r}%;background:#3b82f6"></div></div>
-        </div>
-        """, unsafe_allow_html=True)
-        gender = demo.get("gender", {})
-        st.markdown(f"""
-        <div class="ratio-bar-container">
-            <div class="ratio-bar-labels"><span>👩 여성 {gender.get("female",50)}%</span><span>👨 남성 {gender.get("male",50)}%</span></div>
-            <div class="ratio-bar"><div style="width:{gender.get("female",50)}%;background:#f472b6"></div><div style="width:{gender.get("male",50)}%;background:#60a5fa"></div></div>
-        </div>
-        """, unsafe_allow_html=True)
-        age = demo.get("age", {})
-        if age:
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("**연령대 분포**")
-            df_age = pd.DataFrame({"연령대": list(age.keys()), "비율(%)": list(age.values())}).set_index("연령대")
-            st.bar_chart(df_age, color="#3b82f6", use_container_width=True)
-
-    with col_right:
-        st.markdown('<div class="section-header">🔗 연관 키워드</div>', unsafe_allow_html=True)
-        if related:
-            rows = []
-            for rk in related:
-                sat_val = rk["saturation"]
-                sat_emoji = "🔴" if sat_val >= 300 else ("🟡" if sat_val >= 150 else "🟢")
-                rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}", "포화도": f"{sat_emoji} {sat_val}%"})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(len(rows)*40+40, 600))
-
-    # 블로그 키워드 추천
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">💡 블로그 키워드 추천 판단</div>', unsafe_allow_html=True)
-    monthly_total = sv.get("monthly_total", 0)
-    issues = []
-    if blog_sat > 300: issues.append(f"포화도 {blog_sat}%로 극심한 경쟁 (기준: 300% 이하)")
-    if monthly_total < 500: issues.append(f"월 검색량 {monthly_total:,}회로 수요 부족 (기준: 1,000회 이상)")
-    if yoy < -30: issues.append(f"전년대비 {yoy:+.1f}% 검색량 급감 (기준: -30% 미만)")
-    goods = []
-    if monthly_total >= 1000: goods.append(f"월 검색량 {monthly_total:,}회 — 충분한 수요")
-    if blog_sat <= 150: goods.append(f"포화도 {blog_sat}% — 경쟁 적정")
-    if diff["score"] >= 55: goods.append(f"난이도 {diff['grade']} — 진입 가능")
-    if yoy >= 0: goods.append(f"전년대비 {yoy:+.1f}% — 상승 트렌드")
-
-    for issue in issues: st.error(f"❌ {issue}")
-    for good in goods: st.success(f"✅ {good}")
-
-    if not issues or len(goods) > len(issues):
-        st.info("👉 이 키워드로 블로그 글 작성을 **추천**합니다.")
-    else:
-        st.warning("👉 이 키워드 단독으로는 어렵습니다. 연관 키워드 중 포화도가 낮은 롱테일 키워드를 활용하세요.")
-        good_alts = [rk for rk in related if rk["saturation"] <= 150 and rk["monthly_total"] >= 1000]
-        if good_alts:
-            st.markdown("**추천 대안 키워드:**")
-            for alt in good_alts[:5]:
-                st.markdown(f"- **{alt['keyword']}** (월 {alt['monthly_total']:,}회 / 포화도 {alt['saturation']}%)")
+    # 연관 키워드
+    st.markdown('<div class="section-header">🔗 연관 키워드</div>', unsafe_allow_html=True)
+    if related:
+        rows = []
+        for rk in related:
+            sat_val = rk["saturation"]
+            sat_emoji = "🔴" if sat_val >= 300 else ("🟡" if sat_val >= 150 else "🟢")
+            rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}", "포화도": f"{sat_emoji} {sat_val}%"})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(len(rows)*40+40, 600))
 
     # JSON 다운로드
     st.markdown("<br>", unsafe_allow_html=True)
@@ -744,7 +645,7 @@ def main():
     st.markdown("""
     <div style="text-align:center;margin-bottom:32px">
         <h1 style="font-size:32px;font-weight:800">🔍 키워드 분석기</h1>
-        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 포화도 · 트렌드 · 인구통계를 한눈에</p>
+        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 포화도 · 트렌드를 한눈에</p>
     </div>
     """, unsafe_allow_html=True)
 
