@@ -391,20 +391,13 @@ class NaverDataLabAPI:
 # ============================================================
 # 난이도 등급
 # ============================================================
-def calculate_difficulty(monthly_search, blog_saturation, cpc, competition):
+def calculate_difficulty(monthly_search, cpc, competition):
     score = 0
     if monthly_search >= 50000: score += 30
     elif monthly_search >= 20000: score += 25
     elif monthly_search >= 10000: score += 20
     elif monthly_search >= 5000: score += 15
     elif monthly_search >= 1000: score += 10
-    else: score += 5
-
-    if blog_saturation < 50: score += 30
-    elif blog_saturation < 100: score += 25
-    elif blog_saturation < 150: score += 20
-    elif blog_saturation < 200: score += 15
-    elif blog_saturation < 300: score += 10
     else: score += 5
 
     if cpc >= 2000: score += 20
@@ -431,7 +424,7 @@ def run_analysis(keyword, config):
     result = {
         "keyword": keyword,
         "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "search_volume": {}, "blog_stats": {}, "saturation": {},
+        "search_volume": {}, "blog_stats": {},
         "trend": {}, "difficulty": {},
         "related_keywords": [], "cpc": {}
     }
@@ -463,7 +456,7 @@ def run_analysis(keyword, config):
         }
         for rk in kw_stats["related_keywords"][:15]:
             result["related_keywords"].append({
-                "keyword": rk["keyword"], "monthly_total": rk["monthly_total"], "saturation": 0
+                "keyword": rk["keyword"], "monthly_total": rk["monthly_total"]
             })
 
     progress.progress(25, text="📝 블로그 발행량 조회 중...")
@@ -474,22 +467,10 @@ def run_analysis(keyword, config):
         config["naver_openapi"]["client_secret"]
     )
     monthly_publish, total_posts = blog_api.get_monthly_publish_count(keyword)
-    monthly_search = result["search_volume"].get("monthly_total", 1)
-    blog_saturation = round(monthly_publish / max(monthly_search, 1) * 100, 1)
     result["blog_stats"] = {"monthly_publish": monthly_publish, "total_posts": total_posts}
-    result["saturation"] = {"blog_saturation": blog_saturation}
-
-    # 연관 키워드 포화도
-    progress.progress(40, text="📊 연관 키워드 포화도 계산 중...")
-    for i, rk in enumerate(result["related_keywords"]):
-        rk_monthly, _ = blog_api.get_monthly_publish_count(rk["keyword"])
-        rk["saturation"] = round(rk_monthly / max(rk["monthly_total"], 1) * 100, 1)
-        pct = 40 + int((i + 1) / max(len(result["related_keywords"]), 1) * 30)
-        progress.progress(pct, text=f"📊 연관 키워드 포화도 계산 중... ({i+1}/{len(result['related_keywords'])})")
-        time.sleep(0.2)
 
     # 3. DataLab
-    progress.progress(75, text="📈 검색 트렌드 조회 중...")
+    progress.progress(40, text="📈 검색 트렌드 조회 중...")
     datalab = NaverDataLabAPI(
         config["naver_openapi"]["client_id"],
         config["naver_openapi"]["client_secret"]
@@ -501,8 +482,9 @@ def run_analysis(keyword, config):
     # 4. 난이도
     cpc_val = result["cpc"].get("avg_pc_cpc", 0)
     if isinstance(cpc_val, str): cpc_val = 0
+    monthly_search = result["search_volume"].get("monthly_total", 1)
     grade, grade_label, grade_score = calculate_difficulty(
-        monthly_search, blog_saturation, cpc_val,
+        monthly_search, cpc_val,
         result["cpc"].get("competition", "보통")
     )
     result["difficulty"] = {"grade": grade, "label": grade_label, "score": grade_score}
@@ -519,7 +501,6 @@ def run_analysis(keyword, config):
 def display_results(result):
     sv = result["search_volume"]
     bs = result["blog_stats"]
-    sat = result["saturation"]
     diff = result["difficulty"]
     trend = result["trend"]
     cpc = result["cpc"]
@@ -544,18 +525,15 @@ def display_results(result):
     </div>
     """, unsafe_allow_html=True)
 
-    blog_sat = sat.get("blog_saturation", 0)
-    sat_status = "⚠️ 포화" if blog_sat > 150 else "✅ 적정"
     yoy = trend.get("yoy_change", 0)
     yoy_color = "#ef4444" if yoy < 0 else "#22c55e"
     yoy_icon = "📉" if yoy < 0 else "📈"
 
-    cols = st.columns(6)
+    cols = st.columns(5)
     metrics = [
         ("월 검색량", f"{sv.get('monthly_total',0):,}", "회", ""),
         ("월 발행량", f"{bs.get('monthly_publish',0):,}", "개", ""),
         ("평균 클릭 광고비", f"{cpc.get('avg_pc_cpc',0)}", "원", ""),
-        ("블로그 포화도", f"{blog_sat}", "%", sat_status),
         ("경쟁도", f"{cpc.get('competition','')}", "", ""),
         ("전년대비", f"{yoy:+.1f}", "%", f"{yoy_icon} {'감소' if yoy < 0 else '증가'}"),
     ]
@@ -592,9 +570,7 @@ def display_results(result):
     if related:
         rows = []
         for rk in related:
-            sat_val = rk["saturation"]
-            sat_emoji = "🔴" if sat_val >= 300 else ("🟡" if sat_val >= 150 else "🟢")
-            rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}", "포화도": f"{sat_emoji} {sat_val}%"})
+            rows.append({"키워드": rk["keyword"], "월 검색량": f"{rk['monthly_total']:,}"})
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(len(rows)*40+40, 600))
 
     # JSON 다운로드
@@ -645,7 +621,7 @@ def main():
     st.markdown("""
     <div style="text-align:center;margin-bottom:32px">
         <h1 style="font-size:32px;font-weight:800">🔍 키워드 분석기</h1>
-        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 포화도 · 트렌드를 한눈에</p>
+        <p style="color:#94a3b8;font-size:15px">네이버 검색량 · 발행량 · 트렌드를 한눈에</p>
     </div>
     """, unsafe_allow_html=True)
 
