@@ -184,6 +184,42 @@ class NaverSearchAdAPI:
             return None
 
 
+    def get_estimated_cpc(self, keyword):
+        """키워드의 예상 클릭당 비용(CPC) 조회"""
+        path = "/estimate/performance/keyword"
+        method = "POST"
+        headers = self._get_headers(method, path)
+        bids = [500, 1000, 2000, 3000, 5000, 7000, 10000]
+        
+        total_cpc = 0
+        cpc_count = 0
+        
+        for device in ["PC"]:  # PC 기준 CPC만 사용 (판다랭크 동일 기준)
+            try:
+                body = {"device": device, "keywordplus": False, "key": keyword, "bids": bids}
+                resp = requests.post(f"{self.BASE_URL}{path}", headers=headers, json=body, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for est in data.get("estimate", []):
+                        clicks = est.get("clicks", 0)
+                        cost = est.get("cost", 0)
+                        if clicks > 0 and cost > 0:
+                            cpc = cost / clicks
+                            total_cpc += cpc
+                            cpc_count += 1
+                            break  # 클릭이 발생하는 최소 입찰가의 CPC만 사용
+                # 서명 갱신 (타임스탬프 변경)
+                import time as _t
+                _t.sleep(0.2)
+                headers = self._get_headers(method, path)
+            except Exception:
+                continue
+        
+        if cpc_count > 0:
+            return round(total_cpc / cpc_count)
+        return 0
+
+
 class NaverBlogSearchAPI:
     BASE_URL = "https://openapi.naver.com/v1/search/blog.json"
 
@@ -196,32 +232,98 @@ class NaverBlogSearchAPI:
             "X-Naver-Client-Id": self.client_id,
             "X-Naver-Client-Secret": self.client_secret
         }
-        params = {"query": keyword, "display": 100, "start": 1, "sort": "date"}
         try:
-            resp = requests.get(self.BASE_URL, headers=headers, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            total = data.get("total", 0)
-            items = data.get("items", [])
-            if not items:
+            # 1단계: start=1에서 100건 (최신)
+            resp1 = requests.get(self.BASE_URL, headers=headers,
+                params={"query": keyword, "display": 100, "start": 1, "sort": "date"}, timeout=15)
+            resp1.raise_for_status()
+            data1 = resp1.json()
+            total = data1.get("total", 0)
+            items1 = data1.get("items", [])
+            if not items1:
                 return 0, total
+
             now = datetime.now()
             thirty_days_ago = now - timedelta(days=30)
-            recent_count = 0
-            for item in items:
-                postdate = item.get("postdate", "")
-                if postdate:
-                    try:
-                        post_dt = datetime.strptime(postdate, "%Y%m%d")
-                        if post_dt >= thirty_days_ago:
-                            recent_count += 1
-                    except ValueError:
-                        continue
-            if len(items) > 0 and recent_count > 0:
-                estimated_monthly = int(total * (recent_count / len(items)))
+
+            # 최신 100건 중 30일 이내 비율 확인
+            def count_recent(items):
+                count = 0
+                for item in items:
+                    postdate = item.get("postdate", "")
+                    if postdate:
+                        try:
+                            dt = datetime.strptime(postdate, "%Y%m%d")
+                            if dt >= thirty_days_ago:
+                                count += 1
+                        except ValueError:
+                            continue
+                return count
+
+            recent1 = count_recent(items1)
+
+            # 100건 모두 30일 이내가 아니면, 이 100건 내에서 비율로 추정
+            if recent1 < len(items1):
+                if recent1 > 0:
+                    return recent1, total
+                else:
+                    return 0, total
+
+            # 100건 모두 최근 30일이면 → start=1000에서 추가 확인
+            import time as _time
+            _time.sleep(0.2)
+            resp2 = requests.get(self.BASE_URL, headers=headers,
+                params={"query": keyword, "display": 100, "start": 1000, "sort": "date"}, timeout=15)
+            resp2.raise_for_status()
+            data2 = resp2.json()
+            items2 = data2.get("items", [])
+
+            if not items2:
+                return min(total, 1000), total
+
+            # start=1000의 가장 오래된 글 날짜와 start=1의 가장 최근 글 날짜 비교
+            def get_oldest_date(items):
+                for item in reversed(items):
+                    postdate = item.get("postdate", "")
+                    if postdate:
+                        try:
+                            return datetime.strptime(postdate, "%Y%m%d")
+                        except ValueError:
+                            continue
+                return None
+
+            def get_newest_date(items):
+                for item in items:
+                    postdate = item.get("postdate", "")
+                    if postdate:
+                        try:
+                            return datetime.strptime(postdate, "%Y%m%d")
+                        except ValueError:
+                            continue
+                return None
+
+            newest = get_newest_date(items1)
+            oldest = get_oldest_date(items2)
+
+            if newest and oldest:
+                days_span = max((newest - oldest).days, 1)
+                if days_span <= 30:
+                    # 1100개가 N일에 걸쳐 있으면 일평균 = 1100/N, 월간 = 일평균*30
+                    daily_rate = 1100 / days_span
+                    estimated_monthly = int(daily_rate * 30)
+                else:
+                    # 1100개가 30일 이상이면, 30일 이내 비율로 추정
+                    recent2 = count_recent(items2)
+                    if recent2 < len(items2):
+                        # 30일 경계가 start=1000 부근 → 비율로 보간
+                        boundary_pos = 1000 + int(len(items2) * (recent2 / max(len(items2), 1)))
+                        estimated_monthly = boundary_pos
+                    else:
+                        estimated_monthly = int(1100 / days_span * 30)
+                return estimated_monthly, total
             else:
-                estimated_monthly = int(total * 0.02)
-            return estimated_monthly, total
+                return min(total, 1000), total
+
         except Exception as e:
             st.warning(f"블로그 검색 API 오류: {e}")
             return 0, 0
@@ -393,8 +495,10 @@ def run_analysis(keyword, config):
             "pc_ratio": main["pc_ratio"],
             "mobile_ratio": main["mobile_ratio"]
         }
+        # 실제 CPC(원) 조회
+        estimated_cpc = ad_api.get_estimated_cpc(keyword)
         result["cpc"] = {
-            "avg_pc_cpc": main.get("avg_cpc", 0),
+            "avg_pc_cpc": estimated_cpc,
             "avg_mobile_cpc": main.get("avg_mobile_cpc", 0),
             "competition": main.get("competition", "")
         }
