@@ -40,13 +40,7 @@ st.markdown("""
     .metric-card .value { font-size: 28px; font-weight: 700; color: #1e293b; }
     .metric-card .unit { font-size: 14px; font-weight: 400; color: #94a3b8; }
     .metric-card .sub { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-    .grade-badge {
-        display: inline-flex; flex-direction: column; align-items: center;
-        justify-content: center; width: 80px; height: 80px; border-radius: 16px;
-        color: white; font-weight: 700;
-    }
-    .grade-badge .grade { font-size: 28px; line-height: 1; }
-    .grade-badge .grade-label { font-size: 11px; opacity: 0.9; margin-top: 2px; }
+
     .sat-badge {
         display: inline-block; padding: 2px 12px; border-radius: 10px;
         color: white; font-size: 12px; font-weight: 600;
@@ -395,22 +389,9 @@ def display_results(result):
     cpc = result["cpc"]
     related = result["related_keywords"]
 
-    grade_colors = {"A+":"#16a34a","A":"#22c55e","A-":"#84cc16","B+":"#eab308",
-                    "B":"#f59e0b","B-":"#f97316","C":"#ef4444","D":"#dc2626"}
-    gc = grade_colors.get(diff["grade"], "#94a3b8")
-
     st.markdown(f"""
-    <div style="background:white;border-radius:16px;padding:24px;border:1px solid #e2e8f0;display:flex;align-items:center;gap:20px;margin-bottom:20px">
-        <div class="grade-badge" style="background:{gc}">
-            <span class="grade">{diff["grade"]}</span>
-            <span class="grade-label">{diff["label"]}</span>
-        </div>
-        <div>
-            <div style="font-size:24px;font-weight:700">{result["keyword"]}</div>
-            <div style="font-size:14px;color:#94a3b8;margin-top:6px">
-                난이도 <strong>{diff["label"]}</strong> · 점수 {diff["score"]}/100 · {result["analyzed_at"]}
-            </div>
-        </div>
+    <div style="background:white;border-radius:16px;padding:24px;border:1px solid #e2e8f0;text-align:center;margin-bottom:20px">
+        <div style="font-size:26px;font-weight:700;color:#1e293b">{result["keyword"]}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -418,35 +399,36 @@ def display_results(result):
     yoy_color = "#ef4444" if yoy < 0 else "#22c55e"
     yoy_icon = "📉" if yoy < 0 else "📈"
 
-    cols = st.columns(3)
-
-    # 월 검색량 카드 (PC/모바일 구분 표시)
     pc_vol = sv.get('monthly_pc', 0)
     mob_vol = sv.get('monthly_mobile', 0)
     total_vol = sv.get('monthly_total', 0)
+
+    cols = st.columns(4)
     with cols[0]:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="label">월 검색량</div>
+            <div class="label">월 검색량 (총계)</div>
             <div class="value">{total_vol:,}<span class="unit">회</span></div>
-            <div class="sub" style="margin-top:8px;font-size:13px;color:#64748b">
-                💻 PC <strong>{pc_vol:,}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;📱 모바일 <strong>{mob_vol:,}</strong>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # 평균 클릭 광고비 카드
-    with cols[1]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="label">평균 클릭 광고비</div>
-            <div class="value">{cpc.get('avg_pc_cpc',0):,}<span class="unit">원</span></div>
             <div class="sub"></div>
         </div>
         """, unsafe_allow_html=True)
-
-    # 전년대비 카드
+    with cols[1]:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="label">💻 PC</div>
+            <div class="value">{pc_vol:,}<span class="unit">회</span></div>
+            <div class="sub"></div>
+        </div>
+        """, unsafe_allow_html=True)
     with cols[2]:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="label">📱 모바일</div>
+            <div class="value">{mob_vol:,}<span class="unit">회</span></div>
+            <div class="sub"></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with cols[3]:
         st.markdown(f"""
         <div class="metric-card">
             <div class="label">전년대비</div>
@@ -457,11 +439,12 @@ def display_results(result):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 트렌드 차트
+    # 트렌드 차트 (월간 조회량 추정)
     trend_data = trend.get("data", [])
     if trend_data:
+        monthly_total = sv.get("monthly_total", 0)
         st.markdown(f"""
-        <div class="section-header">📈 검색 트렌드
+        <div class="section-header">📈 월간 검색량 추이
             <span style="font-size:14px;font-weight:400;color:{yoy_color}">
                 전년대비 {yoy:+.1f}% {'감소' if yoy < 0 else '증가'}
             </span>
@@ -469,8 +452,16 @@ def display_results(result):
         """, unsafe_allow_html=True)
         df_trend = pd.DataFrame(trend_data)
         df_trend["period"] = pd.to_datetime(df_trend["period"])
+        # 주간 데이터 → 월간 평균 ratio로 집계
         df_trend = df_trend.set_index("period")
-        st.area_chart(df_trend["ratio"], color="#22c55e", use_container_width=True)
+        df_monthly = df_trend.resample("ME").mean()
+        # ratio 최댓값을 현재 월 검색량에 매핑하여 실제 검색량 추정
+        max_ratio = df_monthly["ratio"].max()
+        if max_ratio > 0 and monthly_total > 0:
+            df_monthly["월간 검색량"] = (df_monthly["ratio"] / max_ratio * monthly_total).round(0).astype(int)
+        else:
+            df_monthly["월간 검색량"] = 0
+        st.area_chart(df_monthly["월간 검색량"], color="#22c55e", use_container_width=True)
 
     # 연관 키워드
     st.markdown('<div class="section-header">🔗 연관 키워드</div>', unsafe_allow_html=True)
